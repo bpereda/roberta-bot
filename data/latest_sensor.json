@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-06-18 20:56:24",
+  "soil_raw": 3776,
+  "soil_percent": 8,
+  "air_humidity": 35.0,
+  "temp_c": 23.0,
+  "light_raw": 2967,
+  "plant_condition": "sin_etiqueta",
+  "tree_prediction": "estres_leve",
+  "logistic_prediction": "marchita"
+}
