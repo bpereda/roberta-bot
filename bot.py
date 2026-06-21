@@ -1,4 +1,5 @@
 import csv
+import asyncio
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from paho.mqtt import publish
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -117,6 +119,26 @@ Fuente: última medición recibida directamente desde el ESP32.
 Datos actuales: {values}
 Interpretación actual: {interpretation}
 """.strip()
+
+
+def publish_sensor_measurement_command() -> None:
+    username = os.getenv("MQTT_USERNAME", "").strip()
+    password = os.getenv("MQTT_PASSWORD", "").strip()
+    authentication = None
+
+    if username:
+        authentication = {"username": username, "password": password}
+
+    publish.single(
+        topic=os.getenv("MQTT_COMMAND_TOPIC", "roberta-belupereda/commands"),
+        payload="measure",
+        qos=1,
+        retain=False,
+        hostname=os.getenv("MQTT_HOST", "broker.hivemq.com"),
+        port=int(os.getenv("MQTT_PORT", "1883")),
+        auth=authentication,
+        keepalive=30,
+    )
 
 
 def load_sensor_dataset_summary(max_rows: int = 8) -> str:
@@ -361,6 +383,20 @@ async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def measure_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, publish_sensor_measurement_command)
+        await update.message.reply_text(
+            "Dame unos segundos, reina: estoy consultando mis sensores 💅🌱"
+        )
+    except Exception:
+        logger.exception("No se pudo publicar el comando MQTT")
+        await update.message.reply_text(
+            "No pude contactar la maceta en este momento. Probá nuevamente en unos segundos 🌱"
+        )
+
+
 async def debug_csv_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(load_sensor_dataset_summary(max_rows=1))
 
@@ -418,6 +454,7 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("chatid", chat_id_command))
+    application.add_handler(CommandHandler("medir", measure_command))
     application.add_handler(CommandHandler("debugcsv", debug_csv_command))
     application.add_handler(CommandHandler("debuglatest", debug_latest_command))
     application.add_handler(CommandHandler("debugrag", debug_rag_command))

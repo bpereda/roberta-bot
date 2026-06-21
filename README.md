@@ -82,6 +82,10 @@ python bot.py
 
 Después abrí tu bot en Telegram y mandale `/start`.
 
+El comando `/medir` publica una orden MQTT para que la ESP32 tome una lectura
+inmediata. Telegram continúa funcionando mediante polling y las mediciones
+continúan enviándose al backend por HTTPS.
+
 En otra terminal corré el servidor para el ESP32:
 
 ```bash

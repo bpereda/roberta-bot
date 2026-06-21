@@ -1,3 +1,4 @@
 openai
+paho-mqtt==2.1.0
 python-dotenv==1.0.1
 python-telegram-bot==21.9
