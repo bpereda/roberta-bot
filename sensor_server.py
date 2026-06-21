@@ -11,6 +11,13 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from telegram import Bot
 
+from config import (
+    SENSOR_DATASET_PATH,
+    SENSOR_LATEST_PATH,
+    SENSOR_SERVER_HOST,
+    SENSOR_SERVER_PORT,
+    SOIL_ALERT_PERCENT,
+)
 
 CSV_COLUMNS = [
     "timestamp",
@@ -34,8 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_dataset_path() -> Path:
-    dataset_path = os.getenv("SENSOR_DATASET_PATH", "data/final_dataset.csv")
-    path = Path(dataset_path).expanduser()
+    path = Path(SENSOR_DATASET_PATH).expanduser()
 
     if not path.is_absolute():
         path = BASE_DIR / path
@@ -45,8 +51,7 @@ def get_dataset_path() -> Path:
 
 
 def get_latest_sensor_path() -> Path:
-    latest_path = os.getenv("SENSOR_LATEST_PATH", "data/latest_sensor.json")
-    path = Path(latest_path).expanduser()
+    path = Path(SENSOR_LATEST_PATH).expanduser()
 
     if not path.is_absolute():
         path = BASE_DIR / path
@@ -115,8 +120,7 @@ def should_alert(reading: dict) -> bool:
     if soil_percent in ("", None):
         return False
 
-    threshold = float(os.getenv("SOIL_ALERT_PERCENT", "25"))
-    return float(soil_percent) <= threshold
+    return float(soil_percent) <= SOIL_ALERT_PERCENT
 
 
 def format_telegram_notification(reading: dict, needs_watering: bool) -> str:
@@ -230,11 +234,15 @@ class SensorRequestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     load_dotenv(ENV_PATH)
-    host = os.getenv("SENSOR_SERVER_HOST", "0.0.0.0")
-    port = int(os.getenv("SENSOR_SERVER_PORT", "8000"))
-    server = ThreadingHTTPServer((host, port), SensorRequestHandler)
+    server = ThreadingHTTPServer(
+        (SENSOR_SERVER_HOST, SENSOR_SERVER_PORT), SensorRequestHandler
+    )
 
-    logger.info("Servidor de sensores escuchando en http://%s:%s", host, port)
+    logger.info(
+        "Servidor de sensores escuchando en http://%s:%s",
+        SENSOR_SERVER_HOST,
+        SENSOR_SERVER_PORT,
+    )
     server.serve_forever()
 
 

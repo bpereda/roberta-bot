@@ -19,30 +19,18 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Editá `.env` y pegá tu token de Telegram, tu API key de OpenAI y los datos de la planta:
+Editá `.env` y pegá únicamente secretos y credenciales del despliegue:
 
 ```env
 TELEGRAM_BOT_TOKEN=123456:ABC...
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.5
-PLANT_NAME=Roberta
-PLANT_SPECIES=Aphelandra squarrosa
-PLANT_NOTES=Planta de interior conocida como afelandra o planta cebra. Prefiere mucha luz pero sin sol directo, temperatura templada, humedad ambiental alta y sustrato ligeramente húmedo. Evitar tanto el exceso de agua como la sequedad: los desajustes de riego pueden afectar las hojas. Es sensible al frío prolongado.
-PLANT_PERSONALITY=Roberta es una diva botánica y medio influencer: le gusta estar en todas, desde juntadas tranqui con amigos hasta fiestas, pero siempre en modo PG para clase. Habla con humor, seguridad y un toque dramático, sin dejar de dar consejos útiles sobre su cuidado.
-PLANT_INFO_SOURCE=https://www.verdeesvida.es/fichas_de_plantas/plantas-de-interior_4/afelandra--planta-cebra_3182
-SENSOR_DATASET_PATH=data/final_dataset.csv
-SENSOR_LATEST_PATH=data/latest_sensor.json
-RAG_ENABLED=true
-RAG_KNOWLEDGE_DIR=knowledge
-RAG_MAX_CHUNKS=6
-RAG_LOG_ENABLED=true
-RAG_LOG_PATH=logs/rag.log
 TELEGRAM_ALERT_CHAT_ID=
-SOIL_ALERT_PERCENT=25
+MQTT_USERNAME=
+MQTT_PASSWORD=
 ```
 
-`SENSOR_DATASET_PATH` puede ser una ruta relativa al proyecto o una ruta absoluta.
-`RAG_KNOWLEDGE_DIR` apunta a la carpeta con documentos `.md` o `.txt` sobre la especie de la planta.
+La personalidad, especie, modelo, rutas, parámetros RAG, MQTT y umbrales se
+configuran en `config.py`. La información científica permanece en `knowledge/`.
 
 ## 3. Agregar dataset CSV
 
@@ -186,7 +174,7 @@ Para recibir las mediciones y alertas automáticas por Telegram:
 3. Pegalo en `.env` como `TELEGRAM_ALERT_CHAT_ID`.
 4. Reiniciá `sensor_server.py`.
 
-Cada medición que recibe el backend se envía al chat configurado. Las mediciones automáticas del ESP32 llegan cada 30 minutos y las capturas manuales llegan inmediatamente sin modificar ese temporizador. Si `plant_condition` es `marchita` o `soil_percent` está por debajo de `SOIL_ALERT_PERCENT`, el mensaje se presenta como una solicitud de riego.
+Cada medición que recibe el backend se envía al chat configurado. Las mediciones automáticas del ESP32 llegan cada 30 minutos y las capturas manuales llegan inmediatamente sin modificar ese temporizador. Si `plant_condition` es `marchita` o la humedad del suelo está por debajo del umbral configurado en `config.py`, el mensaje se presenta como una solicitud de riego.
 
 ## Qué hace ahora
 
@@ -194,12 +182,10 @@ Cada medición que recibe el backend se envía al chat configurado. Las medicion
 - Responde a `/start` y `/help`.
 - Responde a `/status` mostrando perfil de planta y resumen del CSV.
 - Responde a `/chatid` para configurar alertas automáticas.
-- Responde a `/debugcsv` mostrando exactamente qué CSV está leyendo.
-- Responde a `/debugrag consulta` mostrando los fragmentos recuperados por RAG para esa consulta.
+- Responde a `/medir` solicitando una captura inmediata por MQTT.
 - Para preguntas sobre Roberta, plantas, maceta, sensores o cuidados, llama a OpenAI.
-- Agrega al prompt el tipo/especie de planta desde `PLANT_SPECIES`.
-- Agrega la personalidad desde `PLANT_PERSONALITY`.
-- Agrega al prompt las últimas mediciones del CSV definido en `SENSOR_DATASET_PATH`, pero Roberta las presenta como "mi historial", "mis mediciones" o "mis registros".
+- Agrega al prompt el tipo, especie y personalidad definidos en `config.py`.
+- Agrega al prompt las últimas mediciones del historial, pero Roberta las presenta como "mi historial", "mis mediciones" o "mis registros".
 - Recupera fragmentos relevantes desde `knowledge/` y desde el histórico de sensores antes de llamar a OpenAI.
 - Recibe mediciones del ESP32 por `POST /sensor` y las agrega al CSV.
 - Si el mensaje parece fuera del dominio de plantas/maceta/sensores/cuidados, responde con una restricción simple.
@@ -210,7 +196,7 @@ Cada medición que recibe el backend se envía al chat configurado. Las medicion
 El archivo `rag.py` construye chunks locales a partir de:
 
 - documentos `.md` o `.txt` en `knowledge/`;
-- filas recientes del CSV configurado en `SENSOR_DATASET_PATH`.
+- filas recientes del historial configurado en `config.py`.
 
 Para cada pregunta, el bot tokeniza la consulta, expande términos del dominio con sinónimos controlados, detecta la intención principal de la pregunta y puntúa los chunks con un ranking TF-IDF liviano. Además aplica boosts según intención: prioriza sensores para preguntas de estado/riego y prioriza fuentes taxonómicas para preguntas de especie/origen. En los chunks de sensores también aplica un pequeño boost por recencia. Los fragmentos más relevantes se agregan al prompt bajo la sección `Contexto recuperado por RAG`.
 

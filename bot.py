@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -12,10 +14,22 @@ from paho.mqtt import publish
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from rag import build_rag_result, format_rag_debug, retrieve_rag_context, write_rag_log
+from config import (
+    MQTT_COMMAND_TOPIC,
+    MQTT_HOST,
+    MQTT_PORT,
+    OPENAI_MODEL,
+    PLANT_INFO_SOURCE,
+    PLANT_NAME,
+    PLANT_NOTES,
+    PLANT_PERSONALITY,
+    PLANT_SPECIES,
+    SENSOR_DATASET_PATH,
+    SENSOR_LATEST_PATH,
+)
+from rag import retrieve_rag_context
 
 
-DEFAULT_OPENAI_MODEL = "gpt-5.5"
 BASE_DIR = Path(__file__).parent
 ENV_PATH = BASE_DIR / ".env"
 
@@ -73,24 +87,17 @@ logger = logging.getLogger(__name__)
 
 
 def get_plant_profile() -> str:
-    plant_name = os.getenv("PLANT_NAME", "Roberta")
-    plant_species = os.getenv("PLANT_SPECIES", "especie no configurada")
-    plant_notes = os.getenv("PLANT_NOTES", "Sin notas adicionales.")
-    plant_personality = os.getenv("PLANT_PERSONALITY", "Amable, clara y cuidadosa.")
-    plant_source = os.getenv("PLANT_INFO_SOURCE", "Sin fuente configurada.")
-
     return f"""
-Nombre: {plant_name}
-Tipo/especie: {plant_species}
-Notas de cuidado conocidas: {plant_notes}
-Personalidad: {plant_personality}
-Fuente de información: {plant_source}
+Nombre: {PLANT_NAME}
+Tipo/especie: {PLANT_SPECIES}
+Notas de cuidado conocidas: {PLANT_NOTES}
+Personalidad: {PLANT_PERSONALITY}
+Fuente de información: {PLANT_INFO_SOURCE}
 """.strip()
 
 
 def load_latest_sensor_summary() -> str:
-    latest_path = os.getenv("SENSOR_LATEST_PATH", "data/latest_sensor.json")
-    path = Path(latest_path).expanduser()
+    path = Path(SENSOR_LATEST_PATH).expanduser()
 
     if not path.is_absolute():
         path = BASE_DIR / path
@@ -130,24 +137,71 @@ def publish_sensor_measurement_command() -> None:
         authentication = {"username": username, "password": password}
 
     publish.single(
-        topic=os.getenv("MQTT_COMMAND_TOPIC", "roberta-belupereda/commands"),
+        topic=MQTT_COMMAND_TOPIC,
         payload="measure",
         qos=1,
         retain=False,
-        hostname=os.getenv("MQTT_HOST", "broker.hivemq.com"),
-        port=int(os.getenv("MQTT_PORT", "1883")),
+        hostname=MQTT_HOST,
+        port=MQTT_PORT,
         auth=authentication,
         keepalive=30,
     )
 
 
-def load_sensor_dataset_summary(max_rows: int = 8) -> str:
-    dataset_path = os.getenv("SENSOR_DATASET_PATH")
+def requested_history_days(user_text: str) -> Optional[int]:
+    normalized = user_text.lower()
+    normalized = normalized.replace("á", "a").replace("é", "e")
+    normalized = normalized.replace("í", "i").replace("ó", "o").replace("ú", "u")
 
-    if not dataset_path:
-        return "No hay dataset CSV configurado todavía."
+    if any(
+        phrase in normalized
+        for phrase in ("ultima semana", "esta semana", "ultimos 7 dias")
+    ):
+        return 7
+    if any(phrase in normalized for phrase in ("ultimo mes", "ultimos 30 dias")):
+        return 30
+    return None
 
-    path = Path(dataset_path).expanduser()
+
+def parse_row_timestamp(row: dict[str, str]) -> Optional[datetime]:
+    value = str(row.get("timestamp", "")).strip()
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def filter_rows_by_history_window(
+    rows: list[dict[str, str]], user_text: str
+) -> tuple[list[dict[str, str]], str]:
+    days = requested_history_days(user_text)
+    if days is None:
+        return rows, "Todo el historial disponible"
+
+    dated_rows = [(parse_row_timestamp(row), row) for row in rows]
+    dated_rows = [(timestamp, row) for timestamp, row in dated_rows if timestamp]
+    if not dated_rows:
+        return [], f"Últimos {days} días; no hay timestamps válidos"
+
+    latest_timestamp = max(timestamp for timestamp, _ in dated_rows)
+    period_end = datetime.now()
+    cutoff = period_end - timedelta(days=days)
+    filtered_rows = [
+        row for timestamp, row in dated_rows if cutoff <= timestamp <= period_end
+    ]
+    period = (
+        f"Últimos {days} días: {cutoff:%Y-%m-%d %H:%M} a "
+        f"{period_end:%Y-%m-%d %H:%M}; "
+        f"última medición disponible: {latest_timestamp:%Y-%m-%d %H:%M}"
+    )
+    return filtered_rows, period
+
+
+def load_sensor_dataset_summary(user_text: str = "", max_rows: int = 8) -> str:
+    path = Path(SENSOR_DATASET_PATH).expanduser()
     if not path.is_absolute():
         path = BASE_DIR / path
 
@@ -165,11 +219,16 @@ def load_sensor_dataset_summary(max_rows: int = 8) -> str:
     if not rows:
         return f"El dataset CSV existe, pero está vacío: {path}"
 
+    period_rows, period_description = filter_rows_by_history_window(rows, user_text)
+    if not period_rows:
+        return f"Período solicitado: {period_description}. No hay mediciones en ese período."
+
     columns = reader.fieldnames or []
-    recent_rows = rows[-max_rows:]
+    recent_rows = period_rows[-max_rows:]
     latest_row = recent_rows[-1]
-    numeric_summary = build_numeric_summary(rows)
-    condition_summary = build_condition_summary(rows)
+    numeric_summary = build_numeric_summary(period_rows)
+    condition_summary = build_condition_summary(period_rows)
+    prediction_summary = build_prediction_summary(period_rows)
     latest_interpretation = interpret_latest_sensor_row(latest_row)
     recent_lines = [
         ", ".join(f"{key}={value}" for key, value in row.items())
@@ -180,10 +239,13 @@ def load_sensor_dataset_summary(max_rows: int = 8) -> str:
 Archivo: {path}
 Columnas: {", ".join(columns)}
 Total de filas: {len(rows)}
+Período analizado: {period_description}
+Filas dentro del período: {len(period_rows)}
 Última fila histórica: {", ".join(f"{key}={value}" for key, value in latest_row.items())}
 Interpretación de la última fila histórica: {latest_interpretation}
 Resumen numérico: {numeric_summary}
-Distribución de condición de planta: {condition_summary}
+Etiquetas manuales dentro del período: {condition_summary}
+Predicciones dentro del período: {prediction_summary}
 Últimas {len(recent_rows)} filas:
 {chr(10).join(recent_lines)}
 """.strip()
@@ -222,12 +284,47 @@ def build_condition_summary(rows: list[dict[str, str]]) -> str:
     counts: dict[str, int] = {}
 
     for row in rows:
-        condition = row.get("plant_condition", "").strip() or "sin dato"
+        condition = row.get("plant_condition", "").strip()
+        if not condition or condition == "sin_etiqueta":
+            continue
         counts[condition] = counts.get(condition, 0) + 1
 
     return ", ".join(
         f"{condition}={count}" for condition, count in sorted(counts.items())
-    ) or "No hay columna plant_condition."
+    ) or "No hay etiquetas manuales en este período."
+
+
+def build_prediction_summary(rows: list[dict[str, str]]) -> str:
+    has_prediction_data = any(
+        str(row.get("tree_prediction", "")).strip()
+        or str(row.get("logistic_prediction", "")).strip()
+        for row in rows
+    )
+    if not has_prediction_data:
+        return "No hay predicciones guardadas en este período histórico."
+
+    agreements: dict[str, int] = {}
+    disagreements = 0
+    incomplete = 0
+
+    for row in rows:
+        tree = str(row.get("tree_prediction", "")).strip()
+        logistic = str(row.get("logistic_prediction", "")).strip()
+        if not tree or not logistic:
+            incomplete += 1
+        elif tree == logistic:
+            agreements[tree] = agreements.get(tree, 0) + 1
+        else:
+            disagreements += 1
+
+    agreed_text = ", ".join(
+        f"{condition}={count}" for condition, count in sorted(agreements.items())
+    ) or "ninguna"
+    return (
+        f"coincidencias por condición: {agreed_text}; "
+        f"desacuerdos entre modelos={disagreements}; "
+        f"filas sin ambas predicciones={incomplete}"
+    )
 
 
 def interpret_latest_sensor_row(row: dict[str, str]) -> str:
@@ -261,7 +358,7 @@ def interpret_latest_sensor_row(row: dict[str, str]) -> str:
 def build_prompt(user_text: str, conversation_context: str = "") -> str:
     plant_profile = get_plant_profile()
     latest_sensor_summary = load_latest_sensor_summary()
-    dataset_summary = load_sensor_dataset_summary()
+    dataset_summary = load_sensor_dataset_summary(user_text=user_text)
     rag_context = retrieve_rag_context(user_text)
 
     return f"""
@@ -308,6 +405,10 @@ Reglas:
 - Evitá lenguaje adulto, insultos, referencias a alcohol/drogas o temas no aptos para clase.
 - Si falta información de sensores, decilo claramente sin inventar mediciones.
 - Si el usuario pregunta por su historial o evolución, usá el resumen histórico. Para el estado actual, respetá siempre la prioridad de la medición en tiempo real.
+- Si el usuario pregunta por un período como "la última semana", usá exclusivamente las filas incluidas en el período indicado por el resumen histórico.
+- No menciones una condición que tenga conteo cero dentro del período consultado.
+- Las etiquetas manuales describen observaciones registradas. Las predicciones no son momentos confirmados de esa condición.
+- Si árbol y logística discrepan, informá el desacuerdo; nunca conviertas sus dos resultados en dos momentos reales distintos.
 - Si el usuario pregunta si necesitás agua, riego, humedad, temperatura, luz o cuidados, usá sensores y RAG para recomendar una acción concreta.
 - Usá los datos del dataset, pero no menciones "CSV", "dataset", "archivo" ni detalles técnicos al usuario. Decí "mis mediciones", "mi historial" o "mis registros".
 - Si el usuario pregunta por el tipo/especie de planta, respondé usando el perfil configurado y el RAG taxonómico. No menciones humedad, estado marchita, riego ni recomendaciones de cuidado salvo que el usuario también pregunte por estado o cuidados.
@@ -348,7 +449,7 @@ def ask_openai(user_text: str, conversation_context: str = "") -> str:
 
     client = OpenAI(api_key=api_key)
     response = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+        model=OPENAI_MODEL,
         input=build_prompt(user_text, conversation_context),
     )
     answer = response.output_text or "Estoy despierta, pero no pude armar una respuesta clara 🌱"
@@ -356,10 +457,8 @@ def ask_openai(user_text: str, conversation_context: str = "") -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    plant_name = os.getenv("PLANT_NAME", "Roberta")
-    plant_species = os.getenv("PLANT_SPECIES", "especie no configurada")
     await update.message.reply_text(
-        f"Hola, soy {plant_name} 🌱. Tipo de planta: {plant_species}. "
+        f"Hola, soy {PLANT_NAME} 🌱. Tipo de planta: {PLANT_SPECIES}. "
         "Ya puedo responder con OpenAI usando mi perfil y, si está configurado, mi CSV de sensores."
     )
 
@@ -395,21 +494,6 @@ async def measure_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(
             "No pude contactar la maceta en este momento. Probá nuevamente en unos segundos 🌱"
         )
-
-
-async def debug_csv_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(load_sensor_dataset_summary(max_rows=1))
-
-
-async def debug_latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(load_latest_sensor_summary())
-
-
-async def debug_rag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = " ".join(context.args) if context.args else "cuidados riego humedad luz temperatura"
-    rag_result = build_rag_result(query)
-    write_rag_log(rag_result)
-    await update.message.reply_text(format_rag_debug(rag_result))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -455,9 +539,6 @@ def main() -> None:
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("chatid", chat_id_command))
     application.add_handler(CommandHandler("medir", measure_command))
-    application.add_handler(CommandHandler("debugcsv", debug_csv_command))
-    application.add_handler(CommandHandler("debuglatest", debug_latest_command))
-    application.add_handler(CommandHandler("debugrag", debug_rag_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Roberta Bot iniciado con polling.")

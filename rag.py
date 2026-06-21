@@ -1,13 +1,21 @@
 import csv
 import json
 import math
-import os
 import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from config import (
+    RAG_ENABLED,
+    RAG_KNOWLEDGE_DIR,
+    RAG_LOG_ENABLED,
+    RAG_LOG_PATH,
+    RAG_MAX_CHUNKS,
+    SENSOR_DATASET_PATH,
+)
 
 
 BASE_DIR = Path(__file__).parent
@@ -124,8 +132,8 @@ class RagResult:
     intent: str
 
 
-def get_path_from_env(env_name: str, default: str) -> Path:
-    configured_path = Path(os.getenv(env_name, default)).expanduser()
+def get_configured_path(value: str) -> Path:
+    configured_path = Path(value).expanduser()
 
     if not configured_path.is_absolute():
         configured_path = BASE_DIR / configured_path
@@ -180,7 +188,7 @@ def make_chunk(source: str, text: str, kind: str, recency_rank: int = 0) -> Chun
 
 
 def load_knowledge_chunks() -> list[Chunk]:
-    knowledge_dir = get_path_from_env("RAG_KNOWLEDGE_DIR", "knowledge")
+    knowledge_dir = get_configured_path(RAG_KNOWLEDGE_DIR)
 
     if not knowledge_dir.exists():
         return []
@@ -200,7 +208,7 @@ def load_knowledge_chunks() -> list[Chunk]:
 
 
 def load_dataset_chunks(max_rows: int = 80) -> list[Chunk]:
-    dataset_path = get_path_from_env("SENSOR_DATASET_PATH", "data/final_dataset.csv")
+    dataset_path = get_configured_path(SENSOR_DATASET_PATH)
 
     if not dataset_path.exists():
         return []
@@ -385,7 +393,7 @@ def build_rag_result(user_text: str, max_chunks: Optional[int] = None) -> RagRes
     query_tokens = expand_query_tokens(raw_query_tokens)
     intent = detect_intent(query_tokens)
 
-    if os.getenv("RAG_ENABLED", "true").lower() not in {"1", "true", "yes", "si", "sí"}:
+    if not RAG_ENABLED:
         return RagResult(
             query=user_text,
             query_tokens=sorted(query_tokens),
@@ -397,7 +405,7 @@ def build_rag_result(user_text: str, max_chunks: Optional[int] = None) -> RagRes
         )
 
     if max_chunks is None:
-        max_chunks = int(os.getenv("RAG_MAX_CHUNKS", "6"))
+        max_chunks = RAG_MAX_CHUNKS
 
     chunks = load_knowledge_chunks() + load_dataset_chunks()
     idf = build_inverse_document_frequency(chunks)
@@ -436,13 +444,13 @@ def build_rag_result(user_text: str, max_chunks: Optional[int] = None) -> RagRes
 
 
 def get_rag_log_path() -> Path:
-    log_path = get_path_from_env("RAG_LOG_PATH", "logs/rag.log")
+    log_path = get_configured_path(RAG_LOG_PATH)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     return log_path
 
 
 def write_rag_log(result: RagResult) -> None:
-    if os.getenv("RAG_LOG_ENABLED", "true").lower() not in {"1", "true", "yes", "si", "sí"}:
+    if not RAG_LOG_ENABLED:
         return
 
     payload = {
