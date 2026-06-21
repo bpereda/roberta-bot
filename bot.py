@@ -456,44 +456,82 @@ def ask_openai(user_text: str, conversation_context: str = "") -> str:
     return clean_telegram_text(answer)
 
 
+async def ask_openai_async(
+    instruction: str,
+    fallback: str,
+    conversation_context: str = "",
+) -> str:
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            ask_openai,
+            instruction,
+            conversation_context,
+        )
+    except Exception:
+        logger.exception("Error al generar un mensaje de Roberta con OpenAI")
+        return fallback
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        f"Hola, soy {PLANT_NAME} 🌱. Tipo de planta: {PLANT_SPECIES}. "
-        "Ya puedo responder con OpenAI usando mi perfil y, si está configurado, mi CSV de sensores."
+    answer = await ask_openai_async(
+        "Saludá al usuario y presentate brevemente como Roberta. Mencioná que sos "
+        f"una {PLANT_SPECIES} y que puede preguntarte por tu estado y tus cuidados. "
+        "No menciones tecnología, APIs, archivos ni implementación.",
+        f"Hola, soy {PLANT_NAME}, tu diva botánica 🌱✨",
     )
+    await update.message.reply_text(answer)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Podés preguntarme por mi tipo de planta, maceta, riego, humedad, temperatura, luz, sensores o dataset."
+    answer = await ask_openai_async(
+        "Explicá brevemente qué puede preguntarte el usuario: estado actual, riego, "
+        "humedad, temperatura, luz, historial, especie y cuidados. Mencioná también "
+        "que /medir solicita una medición inmediata. No menciones datasets ni detalles técnicos.",
+        "Podés preguntarme por mi estado, riego, luz, temperatura y cuidados. Con /medir reviso mis sensores 🌱",
     )
+    await update.message.reply_text(answer)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        f"Perfil de planta:\n{get_plant_profile()}\n\nDataset:\n{load_sensor_dataset_summary(max_rows=3)}"
+    answer = await ask_openai_async(
+        "Contale al usuario cómo estás ahora usando la medición actual. Si no hay una "
+        "medición actual, decilo claramente. Respondé como Roberta y no muestres datos internos.",
+        "Ahora mismo no pude preparar mi reporte, reina. Probá otra vez en un momento 🌱",
     )
+    await update.message.reply_text(answer)
 
 
 async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        f"Este chat_id es: {update.effective_chat.id}\n"
-        "Usalo como TELEGRAM_ALERT_CHAT_ID si querés recibir alertas automáticas."
+    chat_id = str(update.effective_chat.id)
+    answer = await ask_openai_async(
+        f"Informá que el identificador de este chat es exactamente {chat_id}. "
+        "Conservá todos los dígitos sin cambiarlos y explicá brevemente que sirve para "
+        "recibir tus reportes automáticos.",
+        f"El identificador de este chat es {chat_id}. Usalo para recibir mis reportes automáticos 🌱",
     )
+    await update.message.reply_text(answer)
 
 
 async def measure_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, publish_sensor_measurement_command)
-        await update.message.reply_text(
-            "Dame unos segundos, reina: estoy consultando mis sensores 💅🌱"
+        answer = await ask_openai_async(
+            "Confirmá que acabás de solicitar una medición inmediata a la maceta y que "
+            "el resultado llegará en unos segundos. Sé breve y hablá como Roberta.",
+            "Dame unos segundos, reina: estoy consultando mis sensores 💅🌱",
         )
+        await update.message.reply_text(answer)
     except Exception:
         logger.exception("No se pudo publicar el comando MQTT")
-        await update.message.reply_text(
-            "No pude contactar la maceta en este momento. Probá nuevamente en unos segundos 🌱"
+        answer = await ask_openai_async(
+            "Explicá brevemente que no pudiste solicitar la medición porque la maceta "
+            "no está disponible y pedí que prueben nuevamente en unos segundos.",
+            "No pude contactar la maceta en este momento. Probá nuevamente en unos segundos 🌱",
         )
+        await update.message.reply_text(answer)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -505,14 +543,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"{item['role']}: {item['text']}" for item in history[-6:]
     )
 
-    try:
-        answer = ask_openai(user_text, conversation_context)
-    except Exception:
-        logger.exception("Error al consultar OpenAI")
-        answer = (
-            "Estoy teniendo un problema para consultar OpenAI 🌱. "
-            "Probá de nuevo en un momento."
-        )
+    answer = await ask_openai_async(
+        user_text,
+        "Estoy teniendo un problema para responder ahora. Probá de nuevo en un momento 🌱",
+        conversation_context,
+    )
 
     await update.message.reply_text(answer)
     history.extend(

@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from telegram import Bot
 
+from bot import ask_openai
 from config import (
     SENSOR_DATASET_PATH,
     SENSOR_LATEST_PATH,
@@ -149,6 +151,33 @@ def format_telegram_notification(reading: dict, needs_watering: bool) -> str:
     )
 
 
+def generate_telegram_notification(reading: dict, needs_watering: bool) -> str:
+    measurement = json.dumps(reading, ensure_ascii=False, sort_keys=True)
+    if needs_watering:
+        event_instruction = (
+            "Necesitás agua según esta medición. Pedí un riego moderado de forma clara."
+        )
+    else:
+        event_instruction = (
+            "Es un reporte periódico. Contá brevemente cómo estás sin pedir agua si los datos no lo justifican."
+        )
+
+    instruction = f"""
+Generá el mensaje automático que Roberta enviará a su usuario después de medirse.
+{event_instruction}
+Medición exacta: {measurement}
+Mencioná humedad del suelo, humedad ambiente y temperatura. Podés mencionar las
+predicciones como estimaciones si están presentes. No inventes valores, no uses
+Markdown y respondé en 2 a 4 frases con la personalidad habitual de Roberta.
+""".strip()
+
+    try:
+        return ask_openai(instruction)
+    except Exception:
+        logger.exception("No se pudo generar la notificación con OpenAI")
+        return format_telegram_notification(reading, needs_watering)
+
+
 async def send_telegram_notification(reading: dict, needs_watering: bool) -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_ALERT_CHAT_ID")
@@ -157,8 +186,22 @@ async def send_telegram_notification(reading: dict, needs_watering: bool) -> boo
         return False
 
     bot = Bot(token=token)
-    message = format_telegram_notification(reading, needs_watering)
+    message = generate_telegram_notification(reading, needs_watering)
     await bot.send_message(chat_id=chat_id, text=message)
+    return True
+
+
+def queue_telegram_notification(reading: dict, needs_watering: bool) -> bool:
+    if not os.getenv("TELEGRAM_BOT_TOKEN") or not os.getenv("TELEGRAM_ALERT_CHAT_ID"):
+        return False
+
+    def worker() -> None:
+        try:
+            asyncio.run(send_telegram_notification(reading, needs_watering))
+        except Exception:
+            logger.exception("No se pudo enviar la notificación automática")
+
+    threading.Thread(target=worker, daemon=True).start()
     return True
 
 
@@ -212,8 +255,8 @@ class SensorRequestHandler(BaseHTTPRequestHandler):
             latest_path = save_latest_reading(reading)
             saved_path = append_reading_to_csv(reading)
             needs_watering = should_alert(reading)
-            notification_sent = asyncio.run(
-                send_telegram_notification(reading, needs_watering)
+            notification_queued = queue_telegram_notification(
+                dict(reading), needs_watering
             )
 
             logger.info("Medición recibida y guardada en %s", saved_path)
@@ -224,7 +267,7 @@ class SensorRequestHandler(BaseHTTPRequestHandler):
                     "saved_to": str(saved_path),
                     "latest_saved_to": str(latest_path),
                     "needs_watering": needs_watering,
-                    "notification_sent": notification_sent,
+                    "notification_queued": notification_queued,
                 },
             )
         except Exception as error:
