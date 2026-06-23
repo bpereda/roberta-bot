@@ -18,7 +18,7 @@ OPENAI_MODEL = "gpt-5.4-mini"
 
 SENSOR_DATASET_PATH = "data/final_dataset.csv"
 SENSOR_LATEST_PATH = "data/latest_sensor.json"
-SOIL_ALERT_PERCENT = 25.0
+SOIL_ALERT_PERCENT = 10.0
 SENSOR_SERVER_HOST = "0.0.0.0"
 SENSOR_SERVER_PORT = 8000
 
